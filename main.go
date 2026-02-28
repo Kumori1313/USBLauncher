@@ -1,12 +1,15 @@
-// USB Discovery Launcher - Go Edition (Imperative Walk API)
-// Features: Two-pass scan, icon extraction, fuzzy search, favorites, view toggle
+// USB Discovery Launcher - Fyne Edition (With Icons)
+// Features: Two-pass scan, icon extraction, fuzzy search, favorites
 
 package main
 
 import (
 	"bufio"
 	"fmt"
+	"image"
+	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,39 +18,28 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/lxn/walk"
-	"github.com/lxn/win"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
 // Executable represents a found .exe file
 type Executable struct {
-	Name      string
-	Path      string
-	IconIndex int32
-}
-
-// ExeModel implements walk.ListModel for the ListBox
-type ExeModel struct {
-	walk.ListModelBase
-	items []*Executable
-}
-
-func (m *ExeModel) ItemCount() int {
-	return len(m.items)
-}
-
-func (m *ExeModel) Value(index int) interface{} {
-	if index < 0 || index >= len(m.items) {
-		return ""
-	}
-	return m.items[index].Name
+	Name string
+	Path string
+	Icon image.Image
 }
 
 // AppState holds all application state
 type AppState struct {
 	execList     []*Executable
+	filteredList []*Executable
 	favorites    map[string]bool
 	filterMode   string
+	searchQuery  string
 	usbRoot      string
 	configDir    string
 	favFile      string
@@ -58,29 +50,60 @@ type AppState struct {
 	loadedCount   int
 
 	// GUI elements
-	mainWindow   *walk.MainWindow
-	listBox      *walk.ListBox
-	searchBox    *walk.LineEdit
-	filterCombo  *walk.ComboBox
-	scanProgress *walk.ProgressBar
-	loadProgress *walk.ProgressBar
-	scanLabel    *walk.Label
-	loadLabel    *walk.Label
-	statusLabel  *walk.Label
+	window       fyne.Window
+	list         *widget.List
+	searchEntry  *widget.Entry
+	filterSelect *widget.Select
+	scanProgress *widget.ProgressBar
+	loadProgress *widget.ProgressBar
+	statusLabel  *widget.Label
 
-	// Model
-	model        *ExeModel
-	filteredList []*Executable
+	// Default icon
+	defaultIcon image.Image
+
+	// Selection tracking
+	selectedID int
+	hasSelection bool
 
 	// Synchronization
 	mutex sync.RWMutex
 }
 
-// Windows API for icon extraction
+// Windows API structures and functions
 var (
-	shell32           = syscall.NewLazyDLL("shell32.dll")
-	procExtractIconEx = shell32.NewProc("ExtractIconExW")
+	shell32              = syscall.NewLazyDLL("shell32.dll")
+	user32               = syscall.NewLazyDLL("user32.dll")
+	gdi32                = syscall.NewLazyDLL("gdi32.dll")
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	procExtractIconExW   = shell32.NewProc("ExtractIconExW")
+	procGetIconInfo      = user32.NewProc("GetIconInfo")
+	procGetDIBits        = gdi32.NewProc("GetDIBits")
+	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	procDeleteDC         = gdi32.NewProc("DeleteDC")
+	procDeleteObject     = gdi32.NewProc("DeleteObject")
+	procDestroyIcon      = user32.NewProc("DestroyIcon")
+	procGetBitmapBits    = gdi32.NewProc("GetBitmapBits")
+	procGetObject        = gdi32.NewProc("GetObjectW")
+	procGetVolumeInformationW = kernel32.NewProc("GetVolumeInformationW")
 )
+
+type ICONINFO struct {
+	FIcon    int32
+	XHotspot uint32
+	YHotspot uint32
+	HbmMask  syscall.Handle
+	HbmColor syscall.Handle
+}
+
+type BITMAP struct {
+	BmType       int32
+	BmWidth      int32
+	BmHeight     int32
+	BmWidthBytes int32
+	BmPlanes     uint16
+	BmBitsPixel  uint16
+	BmBits       uintptr
+}
 
 func main() {
 	defer func() {
@@ -92,75 +115,64 @@ func main() {
 	}()
 
 	fmt.Println("==========================================")
-	fmt.Println("USB Launcher Debug Mode")
+	fmt.Println("USB Launcher - Fyne Edition (With Icons)")
 	fmt.Println("==========================================")
 	fmt.Println()
 
-	app := &AppState{
+	appState := &AppState{
 		favorites:    make(map[string]bool),
 		filterMode:   "All",
 		filteredList: make([]*Executable, 0),
 	}
 
-	// Determine USB root (script directory)
+	// Determine USB root
 	exePath, err := os.Executable()
 	if err != nil {
-		app.usbRoot, _ = os.Getwd()
-		fmt.Println("Using working directory:", app.usbRoot)
+		appState.usbRoot, _ = os.Getwd()
 	} else {
-		app.usbRoot = filepath.Dir(exePath)
-		fmt.Println("Using executable directory:", app.usbRoot)
+		appState.usbRoot = filepath.Dir(exePath)
 	}
+	fmt.Println("USB Root:", appState.usbRoot)
 
-	app.configDir = filepath.Join(app.usbRoot, "Config")
-	app.favFile = filepath.Join(app.configDir, "favorites.ini")
+	appState.configDir = filepath.Join(appState.usbRoot, "Config")
+	appState.favFile = filepath.Join(appState.configDir, "favorites.ini")
+	os.MkdirAll(appState.configDir, 0755)
 
-	// Create config directory
-	os.MkdirAll(app.configDir, 0755)
+	appState.fsType = getFilesystemType(appState.usbRoot)
+	fmt.Println("Filesystem:", appState.fsType)
 
-	// Detect filesystem type
-	app.fsType = getFilesystemType(app.usbRoot)
-	fmt.Println("Filesystem type:", app.fsType)
+	appState.loadFavorites()
+	fmt.Println("Favorites loaded:", len(appState.favorites))
 
-	// Load favorites
-	app.loadFavorites()
-	fmt.Println("Favorites loaded:", len(app.favorites))
+	// Create default icon
+	appState.defaultIcon = createDefaultIcon()
 
-	// Create and run GUI
 	fmt.Println("Creating GUI...")
-	app.createAndRunGUI()
+	appState.createAndRunGUI()
 }
 
 func getFilesystemType(root string) string {
-	if len(root) < 1 {
+	if len(root) < 2 {
 		return "Unknown"
 	}
 
 	drive := root
-	if len(root) >= 2 && root[1] == ':' {
+	if root[1] == ':' {
 		drive = root[:2] + "\\"
-	} else {
-		drive = root[:1] + ":\\"
 	}
 
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	getVolumeInfo := kernel32.NewProc("GetVolumeInformationW")
-
+	drivePtr, _ := syscall.UTF16PtrFromString(drive)
 	volumeName := make([]uint16, 256)
 	fsName := make([]uint16, 256)
 	var serialNumber, maxComponentLen, fsFlags uint32
 
-	drivePtr, _ := syscall.UTF16PtrFromString(drive)
-
-	ret, _, _ := getVolumeInfo.Call(
+	ret, _, _ := procGetVolumeInformationW.Call(
 		uintptr(unsafe.Pointer(drivePtr)),
-		uintptr(unsafe.Pointer(&volumeName[0])),
-		256,
+		uintptr(unsafe.Pointer(&volumeName[0])), 256,
 		uintptr(unsafe.Pointer(&serialNumber)),
 		uintptr(unsafe.Pointer(&maxComponentLen)),
 		uintptr(unsafe.Pointer(&fsFlags)),
-		uintptr(unsafe.Pointer(&fsName[0])),
-		256,
+		uintptr(unsafe.Pointer(&fsName[0])), 256,
 	)
 
 	if ret != 0 {
@@ -169,8 +181,8 @@ func getFilesystemType(root string) string {
 	return "Unknown"
 }
 
-func (app *AppState) loadFavorites() {
-	file, err := os.Open(app.favFile)
+func (appState *AppState) loadFavorites() {
+	file, err := os.Open(appState.favFile)
 	if err != nil {
 		return
 	}
@@ -190,158 +202,281 @@ func (app *AppState) loadFavorites() {
 		if inSection && len(line) > 0 {
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) >= 1 {
-				app.favorites[parts[0]] = true
+				appState.favorites[parts[0]] = true
 			}
 		}
 	}
 }
 
-func (app *AppState) saveFavorites() {
-	file, err := os.Create(app.favFile)
+func (appState *AppState) saveFavorites() {
+	file, err := os.Create(appState.favFile)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 
 	file.WriteString("[Favorites]\n")
-	for path := range app.favorites {
+	for path := range appState.favorites {
 		file.WriteString(path + "=1\n")
 	}
 }
 
-func (app *AppState) createAndRunGUI() {
-	var err error
+func createDefaultIcon() image.Image {
+	// Create a simple 16x16 default icon
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	blue := color.RGBA{70, 130, 180, 255}
+	white := color.RGBA{255, 255, 255, 255}
 
-	fmt.Println("Creating main window...")
-	app.mainWindow, err = walk.NewMainWindow()
-	if err != nil {
-		fmt.Println("ERROR creating MainWindow:", err)
-		return
-	}
-
-	title := fmt.Sprintf("USB Discovery Launcher (%s)", app.fsType)
-	app.mainWindow.SetTitle(title)
-	app.mainWindow.SetSize(walk.Size{Width: 750, Height: 550})
-
-	// Set up layout
-	fmt.Println("Setting up layout...")
-	vbox := walk.NewVBoxLayout()
-	vbox.SetMargins(walk.Margins{HNear: 10, VNear: 10, HFar: 10, VFar: 10})
-	vbox.SetSpacing(5)
-	app.mainWindow.SetLayout(vbox)
-
-	// Warning label for FAT32/exFAT
-	if app.fsType == "FAT32" || app.fsType == "exFAT" {
-		warnLabel, _ := walk.NewLabel(app.mainWindow)
-		if app.fsType == "FAT32" {
-			warnLabel.SetText("Warning: FAT32 detected (4GB file limit)")
-		} else {
-			warnLabel.SetText("Notice: exFAT detected (symlinks may fail)")
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			if x == 0 || x == 15 || y == 0 || y == 15 {
+				img.Set(x, y, white)
+			} else {
+				img.Set(x, y, blue)
+			}
 		}
-		warnLabel.SetTextColor(walk.RGB(255, 0, 0))
+	}
+	return img
+}
+
+// extractIcon extracts icon from an executable file
+func extractIcon(exePath string) image.Image {
+	pathPtr, _ := syscall.UTF16PtrFromString(exePath)
+	var hIconLarge, hIconSmall uintptr
+
+	ret, _, _ := procExtractIconExW.Call(
+		uintptr(unsafe.Pointer(pathPtr)),
+		0,
+		uintptr(unsafe.Pointer(&hIconLarge)),
+		uintptr(unsafe.Pointer(&hIconSmall)),
+		1,
+	)
+
+	if ret == 0 {
+		return nil
 	}
 
-	// === Top toolbar composite ===
-	fmt.Println("Creating toolbar...")
-	toolbarComposite, _ := walk.NewComposite(app.mainWindow)
-	hbox := walk.NewHBoxLayout()
-	hbox.SetMargins(walk.Margins{})
-	hbox.SetSpacing(5)
-	toolbarComposite.SetLayout(hbox)
+	// Use small icon (16x16) if available, else large
+	hIcon := hIconSmall
+	if hIcon == 0 {
+		hIcon = hIconLarge
+	}
+	if hIcon == 0 {
+		return nil
+	}
 
-	// Search box
-	app.searchBox, _ = walk.NewLineEdit(toolbarComposite)
-	app.searchBox.SetCueBanner("Search executables...")
-	app.searchBox.TextChanged().Attach(func() {
-		app.applyFilter()
-	})
+	// Convert HICON to image.Image
+	img := hIconToImage(hIcon)
 
-	// Filter combo box
-	app.filterCombo, _ = walk.NewComboBox(toolbarComposite)
-	app.filterCombo.SetModel([]string{"All", "★ Favorites", "Portable", "Games", "Dev", "RE"})
-	app.filterCombo.SetCurrentIndex(0)
-	app.filterCombo.CurrentIndexChanged().Attach(func() {
-		app.filterMode = app.filterCombo.Text()
-		app.applyFilter()
-	})
+	// Cleanup
+	if hIconSmall != 0 {
+		procDestroyIcon.Call(hIconSmall)
+	}
+	if hIconLarge != 0 {
+		procDestroyIcon.Call(hIconLarge)
+	}
+
+	return img
+}
+
+func hIconToImage(hIcon uintptr) image.Image {
+	var iconInfo ICONINFO
+	ret, _, _ := procGetIconInfo.Call(hIcon, uintptr(unsafe.Pointer(&iconInfo)))
+	if ret == 0 {
+		return nil
+	}
+	defer func() {
+		if iconInfo.HbmColor != 0 {
+			procDeleteObject.Call(uintptr(iconInfo.HbmColor))
+		}
+		if iconInfo.HbmMask != 0 {
+			procDeleteObject.Call(uintptr(iconInfo.HbmMask))
+		}
+	}()
+
+	if iconInfo.HbmColor == 0 {
+		return nil
+	}
+
+	// Get bitmap info
+	var bmp BITMAP
+	ret, _, _ = procGetObject.Call(
+		uintptr(iconInfo.HbmColor),
+		unsafe.Sizeof(bmp),
+		uintptr(unsafe.Pointer(&bmp)),
+	)
+	if ret == 0 {
+		return nil
+	}
+
+	width := int(bmp.BmWidth)
+	height := int(bmp.BmHeight)
+	if width <= 0 || height <= 0 || width > 256 || height > 256 {
+		return nil
+	}
+
+	// Get bitmap bits
+	bitsSize := width * height * 4
+	bits := make([]byte, bitsSize)
+
+	ret, _, _ = procGetBitmapBits.Call(
+		uintptr(iconInfo.HbmColor),
+		uintptr(bitsSize),
+		uintptr(unsafe.Pointer(&bits[0])),
+	)
+	if ret == 0 {
+		return nil
+	}
+
+	// Create image from bits (BGRA format, bottom-up)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			srcY := height - 1 - y
+			idx := (srcY*width + x) * 4
+			if idx+3 < len(bits) {
+				b := bits[idx]
+				g := bits[idx+1]
+				r := bits[idx+2]
+				a := bits[idx+3]
+				if a == 0 {
+					a = 255
+				}
+				img.SetRGBA(x, y, color.RGBA{r, g, b, a})
+			}
+		}
+	}
+
+	return img
+}
+
+func (appState *AppState) createAndRunGUI() {
+	fmt.Println("Initializing Fyne...")
+
+	a := app.New()
+	appState.window = a.NewWindow(fmt.Sprintf("USB Discovery Launcher (%s)", appState.fsType))
+	appState.window.Resize(fyne.NewSize(800, 600))
+
+	fmt.Println("Window created")
+
+	// Search entry
+	appState.searchEntry = widget.NewEntry()
+	appState.searchEntry.SetPlaceHolder("Search executables...")
+	appState.searchEntry.OnChanged = func(s string) {
+		appState.searchQuery = s
+		appState.applyFilter()
+	}
+
+	// Filter dropdown
+	appState.filterSelect = widget.NewSelect(
+		[]string{"All", "★ Favorites", "Portable", "Games", "Dev", "RE"},
+		func(s string) {
+			appState.filterMode = s
+			appState.applyFilter()
+		},
+	)
+	appState.filterSelect.SetSelected("All")
 
 	// Favorite button
-	favButton, _ := walk.NewPushButton(toolbarComposite)
-	favButton.SetText("★ Fav")
-	favButton.Clicked().Attach(func() {
-		app.toggleFavorite()
+	favButton := widget.NewButton("★ Fav", func() {
+		appState.toggleFavorite()
 	})
 
 	// Launch button
-	launchButton, _ := walk.NewPushButton(toolbarComposite)
-	launchButton.SetText("Launch")
-	launchButton.Clicked().Attach(func() {
-		app.launchSelected()
+	launchButton := widget.NewButton("Launch", func() {
+		appState.launchSelected()
 	})
 
-	// === List Box ===
-	fmt.Println("Creating list box...")
-	app.listBox, _ = walk.NewListBox(app.mainWindow)
-	app.listBox.SetMinMaxSize(walk.Size{Width: 0, Height: 200}, walk.Size{})
-	
-	// Double-click to launch
-	app.listBox.ItemActivated().Attach(func() {
-		app.launchSelected()
-	})
+	// Progress bars
+	appState.scanProgress = widget.NewProgressBar()
+	appState.loadProgress = widget.NewProgressBar()
+	appState.statusLabel = widget.NewLabel("Initializing...")
 
-	// Initialize model
-	app.model = &ExeModel{items: []*Executable{}}
-	app.listBox.SetModel(app.model)
+	// Create list with icons
+	appState.list = widget.NewList(
+		func() int {
+			appState.mutex.RLock()
+			defer appState.mutex.RUnlock()
+			return len(appState.filteredList)
+		},
+		func() fyne.CanvasObject {
+			icon := canvas.NewImageFromImage(appState.defaultIcon)
+			icon.SetMinSize(fyne.NewSize(20, 20))
+			icon.FillMode = canvas.ImageFillContain
+			label := widget.NewLabel("Template")
+			return container.NewHBox(icon, label)
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			appState.mutex.RLock()
+			defer appState.mutex.RUnlock()
+			if int(id) < len(appState.filteredList) {
+				exe := appState.filteredList[id]
+				box := obj.(*fyne.Container)
+				icon := box.Objects[0].(*canvas.Image)
+				label := box.Objects[1].(*widget.Label)
 
-	// === Progress section composite ===
-	fmt.Println("Creating progress section...")
-	progressComposite, _ := walk.NewComposite(app.mainWindow)
-	pbox := walk.NewVBoxLayout()
-	pbox.SetMargins(walk.Margins{})
-	pbox.SetSpacing(2)
-	progressComposite.SetLayout(pbox)
+				if exe.Icon != nil {
+					icon.Image = exe.Icon
+				} else {
+					icon.Image = appState.defaultIcon
+				}
+				icon.Refresh()
+				label.SetText(exe.Name)
+			}
+		},
+	)
 
-	// Scan progress
-	app.scanLabel, _ = walk.NewLabel(progressComposite)
-	app.scanLabel.SetText("Scanning executables... (0%)")
+	// Track selection
+	appState.list.OnSelected = func(id widget.ListItemID) {
+		appState.mutex.Lock()
+		appState.selectedID = int(id)
+		appState.hasSelection = true
+		appState.mutex.Unlock()
+	}
 
-	app.scanProgress, _ = walk.NewProgressBar(progressComposite)
-	app.scanProgress.SetRange(0, 100)
-	app.scanProgress.SetValue(0)
+	// Top bar
+	topBar := container.NewBorder(
+		nil, nil, nil,
+		container.NewHBox(appState.filterSelect, favButton, launchButton),
+		appState.searchEntry,
+	)
 
-	// Load progress
-	app.loadLabel, _ = walk.NewLabel(progressComposite)
-	app.loadLabel.SetText("Loading launcher... (0%)")
+	// Progress section
+	progressSection := container.NewVBox(
+		widget.NewLabel("Scanning executables..."),
+		appState.scanProgress,
+		widget.NewLabel("Loading launcher..."),
+		appState.loadProgress,
+		appState.statusLabel,
+	)
 
-	app.loadProgress, _ = walk.NewProgressBar(progressComposite)
-	app.loadProgress.SetRange(0, 100)
-	app.loadProgress.SetValue(0)
+	// Main layout
+	content := container.NewBorder(
+		container.NewVBox(topBar, widget.NewSeparator()),
+		progressSection,
+		nil, nil,
+		appState.list,
+	)
 
-	// Status label
-	app.statusLabel, _ = walk.NewLabel(progressComposite)
-	app.statusLabel.SetText("Initializing...")
+	appState.window.SetContent(content)
 
 	// Start scanning in background
-	fmt.Println("Starting background scan...")
-	go app.startTwoPassScan()
+	fmt.Println("Starting scan...")
+	go appState.startTwoPassScan()
 
-	// Show window and run
-	fmt.Println("Showing window...")
-	app.mainWindow.SetVisible(true)
-
-	fmt.Println("Running message loop...")
-	app.mainWindow.Run()
-
+	// Show and run
+	fmt.Println("Running window...")
+	appState.window.ShowAndRun()
 	fmt.Println("Window closed")
 }
 
-func (app *AppState) startTwoPassScan() {
-	// === PASS 1: Count all executables ===
+func (appState *AppState) startTwoPassScan() {
+	// === PASS 1: Count executables ===
 	var exePaths []string
-	scanQueue := []string{app.usbRoot}
+	scanQueue := []string{appState.usbRoot}
 	scannedDirs := 0
 
-	app.updateStatus("Scanning directories...")
+	appState.statusLabel.SetText("Scanning directories...")
 
 	for len(scanQueue) > 0 {
 		current := scanQueue[0]
@@ -358,7 +493,6 @@ func (app *AppState) startTwoPassScan() {
 
 			if entry.IsDir() {
 				name := entry.Name()
-				// Skip hidden, system, and special directories
 				if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "$") ||
 					strings.EqualFold(name, "System Volume Information") ||
 					strings.EqualFold(name, "Config") {
@@ -370,36 +504,34 @@ func (app *AppState) startTwoPassScan() {
 			}
 		}
 
-		// Update scan progress periodically
 		if scannedDirs%10 == 0 {
 			count := len(exePaths)
 			qLen := len(scanQueue)
-			pct := 0
-			if qLen > 0 {
-				pct = (count * 100) / (count + qLen*2)
-			} else {
-				pct = 99
+			pct := 0.0
+			if count+qLen > 0 {
+				pct = float64(count) / float64(count+qLen*2+1)
 			}
-			if pct > 99 {
-				pct = 99
+			if pct > 0.99 {
+				pct = 0.99
 			}
-			app.updateScanProgress(pct, count)
+			appState.scanProgress.SetValue(pct)
+			appState.statusLabel.SetText(fmt.Sprintf("Found %d executables...", count))
 		}
 	}
 
-	app.totalExeCount = len(exePaths)
-	app.updateScanProgress(100, app.totalExeCount)
+	appState.totalExeCount = len(exePaths)
+	appState.scanProgress.SetValue(1.0)
 
-	if app.totalExeCount == 0 {
-		app.updateStatus("No executables found")
-		app.updateLoadProgress(100, 0, 0)
+	if appState.totalExeCount == 0 {
+		appState.statusLabel.SetText("No executables found")
+		appState.loadProgress.SetValue(1.0)
 		return
 	}
 
-	// === PASS 2: Load executables ===
-	app.updateStatus(fmt.Sprintf("Loading %d executables...", app.totalExeCount))
+	// === PASS 2: Load with icons ===
+	appState.statusLabel.SetText(fmt.Sprintf("Loading %d executables...", appState.totalExeCount))
 
-	batchSize := 50
+	batchSize := 20
 	for i := 0; i < len(exePaths); i += batchSize {
 		end := i + batchSize
 		if end > len(exePaths) {
@@ -410,97 +542,66 @@ func (app *AppState) startTwoPassScan() {
 		var batchExes []*Executable
 
 		for _, path := range batch {
+			icon := extractIcon(path)
+			if icon == nil {
+				icon = appState.defaultIcon
+			}
 			exe := &Executable{
 				Name: filepath.Base(path),
 				Path: path,
+				Icon: icon,
 			}
 			batchExes = append(batchExes, exe)
 		}
 
-		// Add batch to list
-		app.mutex.Lock()
-		app.execList = append(app.execList, batchExes...)
-		app.loadedCount = len(app.execList)
-		app.mutex.Unlock()
+		appState.mutex.Lock()
+		appState.execList = append(appState.execList, batchExes...)
+		appState.loadedCount = len(appState.execList)
+		appState.mutex.Unlock()
 
-		// Update UI
-		pct := (app.loadedCount * 100) / app.totalExeCount
-		app.updateLoadProgress(pct, app.loadedCount, app.totalExeCount)
+		pct := float64(appState.loadedCount) / float64(appState.totalExeCount)
+		appState.loadProgress.SetValue(pct)
+		appState.statusLabel.SetText(fmt.Sprintf("Loaded %d / %d executables", appState.loadedCount, appState.totalExeCount))
+		appState.applyFilter()
 
-		// Refresh the list
-		app.applyFilter()
-
-		// Small delay to keep UI responsive
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	app.updateStatus(fmt.Sprintf("Complete - %d executables loaded", app.totalExeCount))
-	app.updateLoadProgress(100, app.totalExeCount, app.totalExeCount)
+	appState.statusLabel.SetText(fmt.Sprintf("Complete - %d executables loaded", appState.totalExeCount))
+	appState.loadProgress.SetValue(1.0)
 }
 
-func (app *AppState) updateScanProgress(pct int, count int) {
-	app.mainWindow.Synchronize(func() {
-		app.scanProgress.SetValue(pct)
-		app.scanLabel.SetText(fmt.Sprintf("Scanning executables... (%d%%)", pct))
-		app.statusLabel.SetText(fmt.Sprintf("Found %d executables...", count))
-	})
-}
+func (appState *AppState) applyFilter() {
+	query := strings.ToLower(appState.searchQuery)
 
-func (app *AppState) updateLoadProgress(pct int, loaded int, total int) {
-	app.mainWindow.Synchronize(func() {
-		app.loadProgress.SetValue(pct)
-		app.loadLabel.SetText(fmt.Sprintf("Loading launcher... (%d%%)", pct))
-		if total > 0 {
-			app.statusLabel.SetText(fmt.Sprintf("Loaded %d / %d executables", loaded, total))
-		}
-	})
-}
-
-func (app *AppState) updateStatus(msg string) {
-	app.mainWindow.Synchronize(func() {
-		app.statusLabel.SetText(msg)
-	})
-}
-
-func (app *AppState) applyFilter() {
-	query := strings.ToLower(app.searchBox.Text())
-
-	app.mutex.Lock()
+	appState.mutex.Lock()
 	var filtered []*Executable
-	for _, exe := range app.execList {
-		// Apply search filter
+	for _, exe := range appState.execList {
 		if query != "" && !fuzzyMatch(query, strings.ToLower(exe.Name)) {
 			continue
 		}
-
-		// Apply category filter
-		if !app.filterMatch(exe.Path) {
+		if !appState.filterMatch(exe.Path) {
 			continue
 		}
-
 		filtered = append(filtered, exe)
 	}
 
-	// Sort by name
 	sort.Slice(filtered, func(i, j int) bool {
 		return strings.ToLower(filtered[i].Name) < strings.ToLower(filtered[j].Name)
 	})
 
-	app.filteredList = filtered
-	app.model.items = filtered
-	app.mutex.Unlock()
+	appState.filteredList = filtered
+	appState.mutex.Unlock()
 
-	// Update list on UI thread
-	app.mainWindow.Synchronize(func() {
-		app.model.PublishItemsReset()
-	})
+	if appState.list != nil {
+		appState.list.Refresh()
+	}
 }
 
 func fuzzyMatch(needle, haystack string) bool {
 	if needle == "" {
 		return true
 	}
-
 	nIdx := 0
 	for hIdx := 0; hIdx < len(haystack) && nIdx < len(needle); hIdx++ {
 		if haystack[hIdx] == needle[nIdx] {
@@ -510,13 +611,13 @@ func fuzzyMatch(needle, haystack string) bool {
 	return nIdx == len(needle)
 }
 
-func (app *AppState) filterMatch(path string) bool {
+func (appState *AppState) filterMatch(path string) bool {
 	pathLower := strings.ToLower(path)
-	switch app.filterMode {
+	switch appState.filterMode {
 	case "All":
 		return true
 	case "★ Favorites":
-		return app.favorites[path]
+		return appState.favorites[path]
 	case "Games":
 		return strings.Contains(pathLower, "game")
 	case "Dev":
@@ -529,63 +630,52 @@ func (app *AppState) filterMatch(path string) bool {
 	return true
 }
 
-func (app *AppState) toggleFavorite() {
-	idx := app.listBox.CurrentIndex()
-	if idx < 0 {
+func (appState *AppState) toggleFavorite() {
+	appState.mutex.RLock()
+	if !appState.hasSelection {
+		appState.mutex.RUnlock()
+		dialog.ShowInformation("No Selection", "Please select an executable first.", appState.window)
 		return
 	}
-
-	app.mutex.RLock()
-	if idx >= len(app.filteredList) {
-		app.mutex.RUnlock()
+	selectedID := appState.selectedID
+	if selectedID >= len(appState.filteredList) {
+		appState.mutex.RUnlock()
 		return
 	}
-	exe := app.filteredList[idx]
-	app.mutex.RUnlock()
+	exe := appState.filteredList[selectedID]
+	appState.mutex.RUnlock()
 
-	if app.favorites[exe.Path] {
-		delete(app.favorites, exe.Path)
-		walk.MsgBox(app.mainWindow, "Favorite Removed", exe.Name+" removed from favorites", walk.MsgBoxIconInformation)
+	if appState.favorites[exe.Path] {
+		delete(appState.favorites, exe.Path)
+		dialog.ShowInformation("Favorite Removed", exe.Name+" removed from favorites", appState.window)
 	} else {
-		app.favorites[exe.Path] = true
-		walk.MsgBox(app.mainWindow, "Favorite Added", exe.Name+" added to favorites", walk.MsgBoxIconInformation)
+		appState.favorites[exe.Path] = true
+		dialog.ShowInformation("Favorite Added", exe.Name+" added to favorites", appState.window)
 	}
-	app.saveFavorites()
+	appState.saveFavorites()
 }
 
-func (app *AppState) launchSelected() {
-	idx := app.listBox.CurrentIndex()
-	if idx < 0 {
-		walk.MsgBox(app.mainWindow, "No Selection", "Please select an executable to launch.", walk.MsgBoxIconWarning)
+func (appState *AppState) launchSelected() {
+	appState.mutex.RLock()
+	if !appState.hasSelection {
+		appState.mutex.RUnlock()
+		dialog.ShowInformation("No Selection", "Please select an executable to launch.", appState.window)
 		return
 	}
-
-	app.mutex.RLock()
-	if idx >= len(app.filteredList) {
-		app.mutex.RUnlock()
+	selectedID := appState.selectedID
+	if selectedID >= len(appState.filteredList) {
+		appState.mutex.RUnlock()
 		return
 	}
-	exe := app.filteredList[idx]
-	app.mutex.RUnlock()
+	exe := appState.filteredList[selectedID]
+	appState.mutex.RUnlock()
 
 	fmt.Println("Launching:", exe.Path)
 
-	// Use ShellExecute to launch
-	verb, _ := syscall.UTF16PtrFromString("open")
-	file, _ := syscall.UTF16PtrFromString(exe.Path)
-	dir, _ := syscall.UTF16PtrFromString(filepath.Dir(exe.Path))
-
-	shellExecute := shell32.NewProc("ShellExecuteW")
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		0,
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(win.SW_SHOWNORMAL),
-	)
-
-	if ret <= 32 {
-		walk.MsgBox(app.mainWindow, "Error", "Failed to launch "+exe.Name, walk.MsgBoxIconError)
+	cmd := exec.Command(exe.Path)
+	cmd.Dir = filepath.Dir(exe.Path)
+	err := cmd.Start()
+	if err != nil {
+		dialog.ShowError(err, appState.window)
 	}
 }
