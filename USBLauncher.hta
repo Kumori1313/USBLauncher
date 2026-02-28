@@ -1,0 +1,516 @@
+<html>
+<head>
+    <title>USB Discovery Launcher</title>
+    <HTA:APPLICATION
+        ID="USBLauncher"
+        APPLICATIONNAME="USB Discovery Launcher"
+        BORDER="dialog"
+        BORDERSTYLE="normal"
+        CAPTION="yes"
+        CONTEXTMENU="no"
+        ICON="shell32.dll,3"
+        INNERBORDER="no"
+        MAXIMIZEBUTTON="yes"
+        MINIMIZEBUTTON="yes"
+        NAVIGABLE="no"
+        SCROLL="no"
+        SCROLLFLAT="no"
+        SELECTION="no"
+        SHOWINTASKBAR="yes"
+        SINGLEINSTANCE="yes"
+        SYSMENU="yes"
+        VERSION="2.0"
+        WINDOWSTATE="normal"
+    />
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 15px;
+            background: #f0f0f0;
+            overflow: hidden;
+        }
+        .header {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .search-box {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .search-box:focus {
+            outline: none;
+            border-color: #0078d4;
+        }
+        select {
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #e5e5e5;
+        }
+        button.primary {
+            background: #0078d4;
+            color: white;
+            border-color: #0078d4;
+        }
+        button.primary:hover {
+            background: #106ebe;
+        }
+        .list-container {
+            height: 350px;
+            width: 100%;
+            border: 1px solid #ccc;
+            background: white;
+            overflow-y: auto;
+            overflow-x: hidden;
+            border-radius: 4px;
+        }
+        .list-item {
+            padding: 8px 15px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .list-item:hover {
+            background: #f5f5f5;
+        }
+        .list-item.selected {
+            background: #cce4f7;
+        }
+        .list-item .icon {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+        .list-item .icon-fallback {
+            width: 18px;
+            height: 18px;
+            background: #4a90d9;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        .list-item .name {
+            font-weight: 500;
+            color: #333;
+        }
+        .list-item .path {
+            font-size: 11px;
+            color: #888;
+            margin-left: auto;
+            max-width: 350px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .list-item .fav-star {
+            color: #ffc107;
+            margin-left: 5px;
+        }
+        .status-bar {
+            margin-top: 10px;
+            padding: 8px 15px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #555;
+        }
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #666;
+            font-size: 16px;
+        }
+        .warning {
+            color: #d83b01;
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body onload="init()">
+    <div id="warning" class="warning"></div>
+    
+    <div class="header">
+        <input type="text" id="searchBox" class="search-box" placeholder="Search executables..." onkeyup="applyFilter()">
+        <select id="filterSelect" onchange="applyFilter()">
+            <option value="All">All</option>
+            <option value="Favorites">★ Favorites</option>
+            <option value="Portable">Portable</option>
+            <option value="Games">Games</option>
+            <option value="Dev">Dev</option>
+            <option value="RE">RE</option>
+        </select>
+        <button onclick="toggleFavorite()">★ Fav</button>
+        <button class="primary" onclick="launchSelected()">Launch</button>
+    </div>
+    
+    <div id="listContainer" class="list-container">
+        <div class="loading" id="loadingMsg">Scanning for executables...</div>
+    </div>
+
+    <div class="status-bar" id="statusBar">Initializing...</div>
+
+    <script language="VBScript">
+        ' VBScript functions for file system access
+        Dim fso, shell, wshShell
+        Set fso = CreateObject("Scripting.FileSystemObject")
+        Set shell = CreateObject("Shell.Application")
+        Set wshShell = CreateObject("WScript.Shell")
+
+        Dim usbRoot, configDir, favFile, fsType
+        Dim favorites
+        Set favorites = CreateObject("Scripting.Dictionary")
+
+        Sub InitPaths()
+            ' Get the HTA's directory as USB root
+            usbRoot = fso.GetParentFolderName(document.location.pathname)
+            ' Handle URL encoding and leading slash
+            If Left(usbRoot, 1) = "/" Then usbRoot = Mid(usbRoot, 2)
+            usbRoot = Replace(usbRoot, "/", "\")
+            usbRoot = Replace(usbRoot, "%20", " ")
+
+            configDir = usbRoot & "\Config"
+            favFile = configDir & "\favorites.ini"
+
+            ' Create config directory if needed
+            If Not fso.FolderExists(configDir) Then
+                fso.CreateFolder(configDir)
+            End If
+
+            ' Detect filesystem
+            On Error Resume Next
+            Dim drive
+            drive = Left(usbRoot, 2)
+            fsType = fso.GetDrive(drive).FileSystem
+            If Err.Number <> 0 Then fsType = "Unknown"
+            On Error GoTo 0
+        End Sub
+
+        Sub LoadFavorites()
+            On Error Resume Next
+            If fso.FileExists(favFile) Then
+                Dim file, line, parts
+                Set file = fso.OpenTextFile(favFile, 1)
+                Dim inSection
+                inSection = False
+                Do Until file.AtEndOfStream
+                    line = Trim(file.ReadLine)
+                    If line = "[Favorites]" Then
+                        inSection = True
+                    ElseIf inSection And Left(line, 1) = "[" Then
+                        Exit Do
+                    ElseIf inSection And Len(line) > 0 Then
+                        parts = Split(line, "=")
+                        If UBound(parts) >= 0 Then
+                            favorites(parts(0)) = True
+                        End If
+                    End If
+                Loop
+                file.Close
+            End If
+            On Error GoTo 0
+        End Sub
+
+        Sub SaveFavorites()
+            On Error Resume Next
+            Dim file, key
+            Set file = fso.CreateTextFile(favFile, True)
+            file.WriteLine "[Favorites]"
+            For Each key In favorites.Keys
+                file.WriteLine key & "=1"
+            Next
+            file.Close
+            On Error GoTo 0
+        End Sub
+
+        Function IsFavorite(path)
+            IsFavorite = favorites.Exists(path)
+        End Function
+
+        Sub AddFavorite(path)
+            favorites(path) = True
+            SaveFavorites
+        End Sub
+
+        Sub RemoveFavorite(path)
+            If favorites.Exists(path) Then
+                favorites.Remove(path)
+            End If
+            SaveFavorites
+        End Sub
+
+        Function ScanAllExes()
+            ' Single-pass scan - returns all exe paths as pipe-delimited string
+            Dim result
+            result = ""
+            Dim queue, queueSize, queueIdx
+            ReDim queue(1000)
+            queue(0) = usbRoot
+            queueSize = 1
+            queueIdx = 0
+
+            Do While queueIdx < queueSize
+                Dim currentPath
+                currentPath = queue(queueIdx)
+                queueIdx = queueIdx + 1
+
+                On Error Resume Next
+                Dim folder, subFolder, file
+                Set folder = fso.GetFolder(currentPath)
+
+                ' Add subdirectories to queue
+                For Each subFolder In folder.SubFolders
+                    Dim fn
+                    fn = subFolder.Name
+                    If Left(fn, 1) <> "." And Left(fn, 1) <> "$" And _
+                       LCase(fn) <> "system volume information" And _
+                       LCase(fn) <> "config" And LCase(fn) <> "recycler" And _
+                       LCase(fn) <> "$recycle.bin" Then
+                        If queueSize > UBound(queue) Then
+                            ReDim Preserve queue(queueSize + 1000)
+                        End If
+                        queue(queueSize) = subFolder.Path
+                        queueSize = queueSize + 1
+                    End If
+                Next
+
+                ' Find exe files and build result string directly
+                For Each file In folder.Files
+                    If LCase(fso.GetExtensionName(file.Name)) = "exe" Then
+                        If Len(result) > 0 Then result = result & "|"
+                        result = result & file.Path
+                    End If
+                Next
+                On Error GoTo 0
+            Loop
+
+            ScanAllExes = result
+        End Function
+
+        Sub LaunchExe(path)
+            On Error Resume Next
+            shell.ShellExecute path, "", fso.GetParentFolderName(path), "open", 1
+            On Error GoTo 0
+        End Sub
+    </script>
+
+    <script language="JavaScript">
+        var execList = [];
+        var filteredList = [];
+        var selectedIndex = -1;
+
+        function resizeList() {
+            var container = document.getElementById("listContainer");
+            // Use documentElement for viewport dimensions in HTA
+            var winHeight = document.documentElement.clientHeight || document.body.clientHeight;
+            var winWidth = document.documentElement.clientWidth || document.body.clientWidth;
+            // Subtract: body padding (30px), header (~50px), status bar (~40px), margins (~20px)
+            var availHeight = winHeight - 140;
+            if (availHeight < 150) availHeight = 150;
+            container.style.height = availHeight + "px";
+            // Width: subtract body padding (30px)
+            container.style.width = (winWidth - 30) + "px";
+        }
+
+        function init() {
+            window.resizeTo(850, 650);
+
+            // Initialize VBScript paths
+            InitPaths();
+
+            // Set window title with filesystem type
+            document.title = "USB Discovery Launcher (" + fsType + ")";
+
+            // Show warning for FAT32/exFAT
+            if (fsType == "FAT32") {
+                document.getElementById("warning").innerHTML = "Warning: FAT32 detected (4GB file limit)";
+            } else if (fsType == "exFAT") {
+                document.getElementById("warning").innerHTML = "Notice: exFAT detected";
+            }
+
+            // Set up dynamic resizing
+            resizeList();
+            window.onresize = resizeList;
+
+            // Load favorites
+            LoadFavorites();
+
+            // Start scanning
+            setTimeout(doScan, 100);
+        }
+
+        function doScan() {
+            updateStatus("Scanning for executables...");
+
+            // Single VBScript call to scan all executables
+            var startTime = new Date().getTime();
+            var exeString = ScanAllExes();
+            var scanTime = new Date().getTime() - startTime;
+
+            // Hide loading message
+            var loadingMsg = document.getElementById("loadingMsg");
+            if (loadingMsg) loadingMsg.style.display = "none";
+
+            if (!exeString || exeString == "") {
+                updateStatus("No executables found");
+                return;
+            }
+
+            // Parse all at once - no batching needed
+            var paths = exeString.split("|");
+            var len = paths.length;
+            for (var i = 0; i < len; i++) {
+                var path = paths[i];
+                var name = path.substring(path.lastIndexOf("\\") + 1);
+                execList.push({
+                    name: name,
+                    path: path
+                });
+            }
+
+            updateStatus("Found " + execList.length + " executables in " + scanTime + "ms");
+            applyFilter();
+        }
+
+        function updateStatus(msg) {
+            document.getElementById("statusBar").innerHTML = msg;
+        }
+
+        function applyFilter() {
+            var query = document.getElementById("searchBox").value.toLowerCase();
+            var filterMode = document.getElementById("filterSelect").value;
+
+            filteredList = [];
+            var len = execList.length;
+
+            for (var i = 0; i < len; i++) {
+                var exe = execList[i];
+
+                // Search filter
+                if (query && !exactMatch(query, exe.name.toLowerCase())) {
+                    continue;
+                }
+
+                // Category filter
+                if (!filterMatch(exe.path, filterMode)) {
+                    continue;
+                }
+
+                filteredList.push(exe);
+            }
+
+            // Sort by name
+            filteredList.sort(function(a, b) {
+                return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+            });
+
+            renderList();
+        }
+
+        function exactMatch(needle, haystack) {
+            if (!needle) return true;
+            return haystack.indexOf(needle) >= 0;
+        }
+
+        function filterMatch(path, mode) {
+            var pathLower = path.toLowerCase();
+            switch (mode) {
+                case "All": return true;
+                case "Favorites": return IsFavorite(path);
+                case "Games": return pathLower.indexOf("game") >= 0;
+                case "Dev": return pathLower.indexOf("programming") >= 0 || pathLower.indexOf("dev") >= 0;
+                case "RE": return pathLower.indexOf("d:\\apps\\re\\") >= 0;
+                case "Portable": return pathLower.indexOf("portable") >= 0;
+            }
+            return true;
+        }
+
+        function renderList() {
+            var html = [];
+            var len = filteredList.length;
+
+            for (var i = 0; i < len; i++) {
+                var exe = filteredList[i];
+                var isFav = IsFavorite(exe.path);
+                var cls = "list-item" + (i == selectedIndex ? " selected" : "");
+
+                html.push('<div class="', cls, '" onclick="sel(', i, ')" ondblclick="run(', i, ')">',
+                    '<div class="icon"></div>',
+                    '<span class="name">', escHtml(exe.name), '</span>',
+                    isFav ? '<span class="fav-star">★</span>' : '',
+                    '<span class="path">', escHtml(exe.path), '</span>',
+                    '</div>');
+            }
+
+            document.getElementById("listContainer").innerHTML = html.join('');
+        }
+
+        function escHtml(s) {
+            return s.replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;");
+        }
+
+        function sel(i) {
+            selectedIndex = i;
+            renderList();
+        }
+
+        function run(i) {
+            if (i >= 0 && i < filteredList.length) {
+                LaunchExe(filteredList[i].path);
+            }
+        }
+
+        function launchSelected() {
+            if (selectedIndex < 0) {
+                alert("Please select an executable to launch.");
+                return;
+            }
+            run(selectedIndex);
+        }
+
+        function toggleFavorite() {
+            if (selectedIndex < 0) {
+                alert("Please select an executable first.");
+                return;
+            }
+
+            var exe = filteredList[selectedIndex];
+
+            if (IsFavorite(exe.path)) {
+                RemoveFavorite(exe.path);
+                alert(exe.name + " removed from favorites");
+            } else {
+                AddFavorite(exe.path);
+                alert(exe.name + " added to favorites");
+            }
+
+            renderList();
+        }
+    </script>
+</body>
+</html>
