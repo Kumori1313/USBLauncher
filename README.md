@@ -1,4 +1,8 @@
-# USBLauncher - Fyne Edition (Icons Branch)
+<p align="center">
+  <img src="Cloudys_USBLauncher_Icon.png" alt="Cloudys_USBLauncher_Icon" width="200">
+</p>
+
+# Cloudy's USBLauncher - Fyne Edition (Icons Branch)
 
 > A portable Windows executable launcher that scans your USB drive, displays each program with its extracted icon, and lets you search, filter, and launch apps directly from the drive.
 
