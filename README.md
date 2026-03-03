@@ -1,4 +1,8 @@
-# USB Launcher - HTA Edition (Silent / Restricted PCs)
+<p align="center">
+  <img src="Cloudys_USBLauncher_Icon.png" alt="Cloudys_USBLauncher_Icon" width="200">
+</p>
+
+# Cloudy's USB Launcher - HTA Edition (Restricted PCs)
 
 > A single-file portable launcher for USB drives that scans for executables and launches them without triggering UAC prompts — built as an HTA (HTML Application) so it runs via the built-in `mshta.exe` host on any Windows machine.
 
