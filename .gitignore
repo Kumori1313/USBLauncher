@@ -1,0 +1,121 @@
+# ========================
+# Security & Secrets
+# ========================
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+*.secret
+secrets.json
+secrets.yaml
+secrets.yml
+credentials.json
+
+# ========================
+# Build Artifacts
+# ========================
+# Compiled binaries produced by build.bat
+# Note: *.exe.manifest files are intentional source artifacts — NOT ignored
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build cache and intermediate object files
+*.o
+*.a
+*.test
+
+# Race detector output
+race.*
+
+# ========================
+# Go-Specific
+# ========================
+vendor/
+bin/
+dist/
+
+# ========================
+# Runtime-Generated Config
+# ========================
+Config/favorites.ini
+Config/*.ini
+Config/*.dat
+Config/*.tmp
+
+# ========================
+# Logs & Temporary Files
+# ========================
+*.log
+*.tmp
+*.temp
+*.swp
+*.bak
+*.orig
+*.cache
+
+# ========================
+# IDE & Editor Files
+# ========================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.iml
+*.iws
+*.ipr
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+Session.vim
+.netrwhist
+*~
+\#*\#
+.\#*
+*.sublime-workspace
+*.sublime-project
+
+# ========================
+# Operating System Files
+# ========================
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.dmp
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.directory
+
+# ========================
+# Test & Coverage Artifacts
+# ========================
+coverage.out
+coverage.html
+*.coverprofile
+testdata/tmp/
+
+# ========================
+# Profiling & Debug Output
+# ========================
+*.prof
+*.pprof
+cpu.out
+mem.out
+block.out
+mutex.out

@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="Cloudys_USBLauncher_Icon.png" alt="Cloudys_USBLauncher_Icon" width="200">
-</p>
-
-# Cloudy's USBLauncher
+# USBLauncher
 
 > A portable Windows GUI tool that scans a USB drive for executables and presents them in a searchable, filterable launch list.
 
