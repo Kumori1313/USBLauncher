@@ -1,0 +1,46 @@
+# ========================
+# Security & Secrets
+# ========================
+.env
+.env.*
+!.env.example
+!.env.template
+*.secret
+secrets.json
+credentials.json
+
+# ========================
+# Runtime-Generated Application Data
+# ========================
+Config/
+favorites.ini
+
+# ========================
+# IDE & Editor Files
+# ========================
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*~
+
+# ========================
+# Operating System Files
+# ========================
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+.AppleDouble
+._*
+.directory
+
+# ========================
+# Logs & Temporary Files
+# ========================
+*.log
+*.tmp
+*.temp
