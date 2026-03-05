@@ -16,11 +16,11 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo [1/3] Go found: 
+echo [1/4] Go found:
 go version
 echo.
 
-echo [2/3] Downloading dependencies...
+echo [2/4] Downloading dependencies...
 go mod tidy
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Failed to download dependencies
@@ -28,7 +28,25 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo [3/3] Building executables...
+echo [3/4] Embedding icon resource...
+where rsrc >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo   rsrc not found, installing...
+    go install github.com/akavel/rsrc@latest
+    if %ERRORLEVEL% NEQ 0 (
+        echo ERROR: Failed to install rsrc
+        pause
+        exit /b 1
+    )
+)
+rsrc -ico Cloudys_USBLauncher_Icon.ico -o rsrc.syso
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: Failed to generate icon resource
+    pause
+    exit /b 1
+)
+
+echo [4/4] Building executables...
 
 echo Building DEBUG version...
 go build -o USBLauncher_Debug.exe .
