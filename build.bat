@@ -53,7 +53,7 @@ REM Enable CGO
 set CGO_ENABLED=1
 
 REM Download dependencies (this takes a while first time)
-echo [3/4] Downloading dependencies...
+echo [3/5] Downloading dependencies...
 echo       (Fyne is large, this may take several minutes)
 go mod tidy
 if %ERRORLEVEL% NEQ 0 (
@@ -62,8 +62,17 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+REM Compile Windows resource file (embeds icon into .exe)
+echo [4/5] Compiling resource file (icon)...
+windres -o resource.syso resource.rc
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: windres failed - ensure MinGW/TDM-GCC is installed
+    pause
+    exit /b 1
+)
+
 REM Build
-echo [4/4] Building executables...
+echo [5/5] Building executables...
 
 echo Building DEBUG version (with console)...
 go build -o USBLauncher_Fyne_Debug.exe .
