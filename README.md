@@ -207,6 +207,22 @@ favFile   = configDir & "\favorites.ini"
 
 Change `"\Config"` to any folder name you prefer, and change `"\favorites.ini"` to rename the file.
 
+### Application icon
+
+The window icon (shown in the title bar and taskbar) is set via the `ICON` attribute in the `<HTA:APPLICATION>` tag near the top of the file:
+
+```html
+<HTA:APPLICATION
+    ...
+    ICON="Cloudys_USBLauncher_Icon.ico"
+    ...
+>
+```
+
+The path is relative to the location of `USBLauncher.hta`. Place your `.ico` file in the same directory as the HTA file and set `ICON` to its filename. If the icon is in a subfolder, use a relative path such as `"assets/myicon.ico"`.
+
+> **Note:** HTA only supports `.ico` format for the `ICON` attribute. PNG or other image formats will not work.
+
 ### Appearance (colours, fonts, spacing)
 
 All visual styling is in the `<style>` block near the top of the file. It is standard CSS. Key selectors:
@@ -227,9 +243,10 @@ After first run, the drive will contain:
 
 ```
 E:\
-├── USBLauncher.hta       <- The launcher (place here before first run)
+├── USBLauncher.hta              <- The launcher (place here before first run)
+├── Cloudys_USBLauncher_Icon.ico <- Custom window/taskbar icon
 └── Config\
-    └── favorites.ini     <- Created automatically; stores starred executables
+    └── favorites.ini            <- Created automatically; stores starred executables
 ```
 
 The `Config` folder is created automatically on first run if it does not exist. The launcher uses the folder containing `USBLauncher.hta` as the USB root, so the file can technically live anywhere on the drive — but placing it at the root ensures the scan covers the whole drive.
